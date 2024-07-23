@@ -2,3 +2,5 @@ streamlit
 paddlepaddle
 paddleocr
 pymupdf
+libgl1-mesa-glx 
+libegl1-mesa-dev
