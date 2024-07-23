@@ -2,4 +2,4 @@ streamlit
 paddlepaddle
 paddleocr
 pymupdf
-libssl-dev
+opencv-python-headless
