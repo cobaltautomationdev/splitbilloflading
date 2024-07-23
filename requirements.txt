@@ -3,3 +3,4 @@ paddlepaddle
 paddleocr
 pymupdf
 opencv-python-headless
+mmcv-full --no-binary mmcv-full
