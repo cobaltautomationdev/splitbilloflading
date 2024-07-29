@@ -8,14 +8,6 @@ import streamlit as st
 
 
 def split_pdf_by_bol_number(uploaded_file):
-    
-    # load_dotenv()
-    # username = os.getenv('username_abby')
-    # password = os.getenv('password_abby')
-
-    # client_id = os.getenv('CLIENT_ID')
-    # client_secret = os.getenv('CLIENT_SECRET')
-
 
     username = st.secrets["username_abby"]
     password =st.secrets["password_abby"]
@@ -90,7 +82,15 @@ def split_pdf_by_bol_number(uploaded_file):
             api_url = f'https://vantage-au.abbyy.com/api/publicapi/v1/transactions/{transactionID}/files/{file_id_json}/download'
             response_json = requests.get(api_url,headers=headers,)
             result = response_json.json()
-            bill_of_lading = result['Fields']['Bill of Lading']
+            
+            try:
+                bill_of_lading = result['Fields']['Bill of Lading']
+            except KeyError:
+                # Handle error: if there is an issue with the field, use the default value
+                print(f"Warning: 'Bill of Lading' field not found for document with fileId: {file_id_json}")
+                bill_of_lading = "not bill of lading"  # Use the default value
+            
+            # bill_of_lading = result['Fields']['Bill of Lading']
             
             file_id_pdf = document['resultFiles'][1]['fileId']
             api_url = f'https://vantage-au.abbyy.com/api/publicapi/v1/transactions/{transactionID}/files/{file_id_pdf}/download'
