@@ -1,84 +1,115 @@
-import fitz
-from fitz import Rect
-from paddleocr import PaddleOCR
-import re
-from io import BytesIO
+import requests
+import os
+import time
+
 import zipfile
+import io
+
+from dotenv import load_dotenv
+import os
 import streamlit as st
 
-ocr = PaddleOCR(use_angle_cls=True, lang='en',show_log = False)
 
-def extract_bol_number(page):
-    texts = page.get_text()
-    bol=""
-    if len(texts)>0:
-        r=page.search_for("Bill Of Lading Number:",)
-        if r:
-            x0=r[0][0]
-            y0=r[0][1]
-            x1=r[0][2]
-            y1=r[0][3]
-            bol = page.get_textbox(Rect(x1,y0,x1+100,y1)).strip()
-        else:
-            bol=""
+def split_pdf_by_bol_number(uploaded_file):
+    
+    # load_dotenv()
+    # username = os.getenv('username_abby')
+    # password = os.getenv('password_abby')
+
+    # client_id = os.getenv('CLIENT_ID')
+    # client_secret = os.getenv('CLIENT_SECRET')
+
+
+    username = st.secrets["username_abby"]
+    password =st.secrets["password_abby"]
+
+    client_id = st.secrets["CLIENT_ID"]
+    client_secret =st.secrets["CLIENT_SECRET"]
+    
+    # get access token
+    url = "https://vantage-au.abbyy.com/auth2/connect/token"
+    data = {"grant_type":"password","scope":"openid permissions global.wildcard",
+            "username":{username},
+            "password":{password},
+            "client_id":{client_id},
+            "client_secret":{client_secret}}
+    headers = {
+    'Content-Type': 'application/x-www-form-urlencoded'
+    }
+
+    response = requests.post(url, headers=headers, data=data)
+    if response.status_code == 200:
+        get_access_token = response.json()["access_token"]
     else:
-        img =page.get_pixmap(dpi=300)
-        result = ocr.ocr(img.tobytes(), cls=True,)
-        if result[0] is not None:
-            page_text = ' '.join([line[1][0] for line in result[0]])
+        print("Error:", response.status_code, response.text)
+      
+    # get transaction id  
+    api_url = 'https://vantage-au.abbyy.com/api/publicapi/v1/transactions'
+    data = {"skillId": "e9e6517a-7a19-4f73-b2e4-857227f904f4",
+            "generateMobileInputLink": False,
+            "registrationParameters": [
+                            {
+                                "key": "string",
+                                "value": "string"
+                            }
+                                    ]
+    }
+
+    headers = {'accept': 'text/plain','Authorization':'Bearer '+ get_access_token}
+    response = requests.post(api_url,headers=headers,json=data)
+    transactionID = response.json()['transactionId']
+
+    # upload pdf file
+    api_url = f'https://vantage-au.abbyy.com/api/publicapi/v1/transactions/{transactionID}/files'
+    headers = { 'accept': '*/*','Authorization':'Bearer '+ get_access_token}
+    model = {'Model':(None, 
+            '{"files": [{"index": 0,"imageProcessingOptions": {"autoCrop": "Default","autoOrientation": "Default"},"registrationParameters": [{"key": "string","value": "string"}]}]}')}
+    
+    file = {
+        'file': (uploaded_file.name, uploaded_file.read(), 'application/pdf')
+    }
+    response = requests.post(api_url,headers=headers,data = model,files=file,)
+
+    # start transactions
+    api_url = f'https://vantage-au.abbyy.com/api/publicapi/v1/transactions/{transactionID}/start'
+    response = requests.post(api_url,headers=headers,)
+     
+    # check if the transaction is processed
+    api_url = f'https://vantage-au.abbyy.com/api/publicapi/v1/transactions/{transactionID}'
+    response = requests.get(api_url,headers=headers,)
+    status = response.json()['status']
+
+    while status != 'Processed':
+        time.sleep(5)
+        response = requests.get(api_url,headers=headers,)
+        status = response.json()['status']
+    
+    headers = { 'accept': 'application/octet-stream','Authorization':'Bearer '+ get_access_token}
+    zip_buffer = io.BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for document in response.json()['documents']:
+            file_id_json = document['resultFiles'][0]['fileId']
+            api_url = f'https://vantage-au.abbyy.com/api/publicapi/v1/transactions/{transactionID}/files/{file_id_json}/download'
+            response_json = requests.get(api_url,headers=headers,)
+            result = response_json.json()
+            bill_of_lading = result['Fields']['Bill of Lading']
             
-            pattern = r'Bill Of Lading Number:\s*[^0-9]*(\d+)'
-            match = re.search(pattern, page_text, re.IGNORECASE)
-
-            if match:
-                bill_of_lading_number = match.group(1)
-                bol= bill_of_lading_number
-            else:
-                bol=""
-    return bol
-
- 
-def save_pdf(bol_pages, pdf_document):
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-        for bol_number, pages in bol_pages.items():
-            new_document = fitz.open()
-            for page in pages:
-                new_document.insert_pdf(pdf_document, from_page=page, to_page=page, start_at=-1)
-            if bol_number:
-                # 使用BytesIO保存文件到内存中
-                pdf_bytes = BytesIO()
-                new_document.save(pdf_bytes)
-                # 将BytesIO设置为读模式
-                pdf_bytes.seek(0)
-                # 添加到ZIP文件中
-                zip_file.writestr(f"{bol_number}.pdf", pdf_bytes.getvalue())
-    # 将ZIP缓冲区设置为读模式
-    zip_buffer.seek(0)
-    return zip_buffer
-
-
-def split_pdf_by_bol_number(input_pdf):
-    bol_pages = {}
-    with fitz.open(stream=input_pdf.getvalue()) as pdf_document:
-        for page_num in range(pdf_document.page_count):
-            page = pdf_document[page_num]
-            bol_number = extract_bol_number(page)
-            if bol_number not in bol_pages:
-                bol_pages[bol_number] = [page_num]
-            else:
-                bol_pages[bol_number].append(page_num)
-        
-        # 保存PDF文件到ZIP缓冲区
-        zip_buffer = save_pdf(bol_pages, pdf_document)
-        # 提供给用户下载
-        st.download_button(
-            label="Download ZIP",
-            data=zip_buffer,
-            file_name="split_pdfs.zip",
-            mime="application/zip"
-        )
-                
+            file_id_pdf = document['resultFiles'][1]['fileId']
+            api_url = f'https://vantage-au.abbyy.com/api/publicapi/v1/transactions/{transactionID}/files/{file_id_pdf}/download'
+            response_pdf = requests.get(api_url,headers=headers,)
+            zip_file.writestr(f"{bill_of_lading}.pdf", response_pdf.content)
+            
+    zip_filename = uploaded_file.name.replace(".pdf", ".zip")
+    # 将 ZIP 文件的内容提供给 Streamlit 用于下载
+    st.download_button(
+        label="Download All PDFs",
+        data=zip_buffer.getvalue(),
+        file_name=zip_filename,
+        mime="application/zip"
+    )
+          
+               
 st.set_page_config(page_title="Split pdf file by bill of lading No", layout="wide",page_icon="icon\cobalt_logo.png") 
 st.sidebar.header("Split pdf file by bill of lading No")
     
